@@ -1,0 +1,64 @@
+{
+  "manifest_version": 2,
+  "id": "xiaocutedog.maibot_plugin_maimaidx",
+  "version": "1.2.0",
+  "name": "maimaiDX 查分",
+  "description": "maimai DX 查分器插件：查歌、定数/拟合定数查歌、曲师/谱师查歌、B50 查分、单曲成绩查询。数据来自水鱼查分器与柚子社别名库。",
+  "author": {
+    "name": "xiaocutedog",
+    "url": "https://github.com/xiaocutedog"
+  },
+  "license": "MIT",
+  "urls": {
+    "repository": "https://github.com/xiaocutedog/maibot-plugin-maimaidx"
+  },
+  "host_application": {
+    "min_version": "1.0.0",
+    "max_version": "1.99.99"
+  },
+  "sdk": {
+    "min_version": "2.0.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [
+    {
+      "type": "python_package",
+      "name": "httpx",
+      "version_spec": ">=0.24.0"
+    },
+    {
+      "type": "python_package",
+      "name": "pydantic",
+      "version_spec": ">=2.0.0"
+    },
+    {
+      "type": "python_package",
+      "name": "pillow",
+      "version_spec": ">=10.0.0"
+    },
+    {
+      "type": "python_package",
+      "name": "numpy",
+      "version_spec": ">=1.24.0"
+    },
+    {
+      "type": "python_package",
+      "name": "fonttools",
+      "version_spec": ">=4.30.0"
+    },
+    {
+      "type": "python_package",
+      "name": "py7zr",
+      "version_spec": ">=0.20.0"
+    }
+  ],
+  "capabilities": [
+    "send.text",
+    "send.image",
+    "send.forward"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN"
+  },
+  "plugin_type": "game"
+}
