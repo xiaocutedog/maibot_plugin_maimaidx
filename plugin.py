@@ -129,6 +129,7 @@ _HELP_TEXT = '''【maimaiDX 查分帮助】
 · 曲师别名 / 谱师别名 —— 查看别名列表
 · maimai更新数据 —— 刷新曲库/别名/牌子数据
 · maihelp —— 显示本帮助
+※ 回复/引用消息不触发指令（只在你自己输入的文字里匹配）
 ※ 数据来源：水鱼查分器（maimai.diving-fish.com）'''
 
 # 帮助菜单分组数据（供主题风帮助图使用）
@@ -217,8 +218,9 @@ if PluginConfigBase is not None:
         __ui_order__ = 1
 
         maimaidx_token: str = Field(
-            default='oyfk03QObSiAhRtp45XYHBWEJG7Fv9I8',
-            description='水鱼查分器开发者 token（用于开发者成绩接口）',
+            default='',
+            description='水鱼查分器开发者 token（用于「查成绩 用户名/QQ号 曲目」等开发者接口）。'
+                        '插件不内置凭据，需自行向水鱼申请后填写；留空则该功能不可用。',
         )
         request_timeout: int = Field(default=30, ge=5, le=120, description='接口请求超时（秒）')
         use_prober_proxy: bool = Field(default=False, description='查分器接口走 yuzuchan 反代')
@@ -228,12 +230,13 @@ if PluginConfigBase is not None:
             description='在线曲绘基础地址（留空关闭在线曲绘；也可把曲绘图片放入数据目录 covers/ 文件夹）',
         )
         divingfish_client_id: str = Field(
-            default='35f1d7cf74e58e2d7680f76f9028d399',
-            description='水鱼 OAuth client_id（与 client_secret 同时填写后启用新版授权）',
+            default='',
+            description='水鱼 OAuth client_id（与 client_secret 同时填写后启用新版授权）。'
+                        '插件不内置凭据，需自行注册应用后填写；留空则「绑定水鱼」不可用。',
         )
         divingfish_client_secret: str = Field(
-            default='bl0OzOzpIze1DA-Ej6BkrnPS24jSH55MqPuA25V1tck',
-            description='水鱼 OAuth client_secret',
+            default='',
+            description='水鱼 OAuth client_secret（与服务端共享的真实机密，请勿外传或提交到版本库）',
         )
         divingfish_auth_url: str = Field(
             default='https://auth.diving-fish.com',
@@ -287,16 +290,22 @@ if PluginConfigBase is not None:
         __ui_order__ = 4
 
         auto_download: bool = Field(
-            default=True,
-            description='未找到官方素材包时自动下载（约 445MB，需 2GB 磁盘空间；下载在后台进行）',
+            default=False,
+            description='未找到官方素材包时自动下载（约 445MB，需 2GB 磁盘空间；下载在后台进行）。'
+                        '默认关闭：开启即代表同意从下方下载源拉取并解压第三方素材包。',
         )
         assets_dir: str = Field(
             default='',
-            description='已下载素材的 static 目录路径；留空则自动管理（首次运行自动下载到数据目录）',
+            description='已下载素材的 static 目录路径；留空则用数据目录 assets/static（自动下载开启时下载到这里）',
         )
         download_url: str = Field(
             default='',
-            description='自定义素材包下载地址（.7z），留空使用内置官方源',
+            description='自定义素材包下载地址（仅接受 https 的 .7z 直链），留空使用内置官方源',
+        )
+        download_sha256: str = Field(
+            default='',
+            description='自定义素材包或官方素材包的 SHA-256（可选）。填写后下载完成会校验，不匹配即拒绝解压；'
+                        '同时会尝试读取 <下载地址>.sha256 作为校验值。留空仅记录实际哈希到日志',
         )
 
     class AccessSectionConfig(PluginConfigBase):
@@ -347,7 +356,8 @@ class MaimaidxPlugin(MaiBotPlugin):
         self._ready: Optional[asyncio.Event] = None
         self._load_task: Optional[asyncio.Task] = None
         self._last_refresh: float = 0.0
-        self._ws_uuid: str = str(uuid.uuid1())
+        # 别名投票接口要求上报一个客户端标识；用 uuid4 随机生成，避免 uuid1 带出的本机 MAC 地址
+        self._ws_uuid: str = str(uuid.uuid4())
         self.guess_games: Dict[str, Dict[str, Any]] = {}
         self.srender = None
         self._assets_task: Optional[asyncio.Task] = None
@@ -393,6 +403,8 @@ class MaimaidxPlugin(MaiBotPlugin):
             from maimaidx_core.asset_fetch import (
                 ARCHIVE_NAME,
                 DEFAULT_ASSET_URLS,
+                AssetFetchError,
+                check_url,
                 download_archive,
                 enough_space,
                 extract_archive,
@@ -401,6 +413,8 @@ class MaimaidxPlugin(MaiBotPlugin):
             from .maimaidx_core.asset_fetch import (
                 ARCHIVE_NAME,
                 DEFAULT_ASSET_URLS,
+                AssetFetchError,
+                check_url,
                 download_archive,
                 enough_space,
                 extract_archive,
@@ -414,7 +428,11 @@ class MaimaidxPlugin(MaiBotPlugin):
         urls: List[str] = []
         custom = (self.config.resources.download_url or '').strip()
         if custom:
-            urls.append(custom)
+            try:
+                urls.append(check_url(custom))
+            except AssetFetchError as e:
+                log.error('maimaidx 素材自动下载已中止：%s（resources.download_url 仅支持 https 直链）', e)
+                return
         urls.extend(DEFAULT_ASSET_URLS)
 
         try:
@@ -432,7 +450,10 @@ class MaimaidxPlugin(MaiBotPlugin):
                     log.info('maimaidx 素材下载进度: %.0f%% (%.0f/%.0f MB)',
                              done / total * 100, done / 1024 / 1024, total / 1024 / 1024)
 
-                await download_archive(urls, archive, progress_cb=progress, log=log)
+                await download_archive(
+                    urls, archive, progress_cb=progress, log=log,
+                    expected_sha256=self.config.resources.download_sha256,
+                )
                 log.info('maimaidx 素材包下载完成，开始解压（约 1-2 分钟）...')
             static = extract_archive(archive, work)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -552,15 +573,67 @@ class MaimaidxPlugin(MaiBotPlugin):
             return 'maimai 查分功能未对本群开放。'
         return 'maimai 查分功能未对你开放。'
 
+    # ---------- 回复/引用消息的指令归属 ----------
+
+    @staticmethod
+    def _quoted_text(kwargs: Dict[str, Any]) -> Optional[str]:
+        """触发消息若是「回复/引用」消息，返回被引用原文。
+
+        返回 None 表示不是回复消息；返回空串表示是回复但拿不到原文
+        （宿主或适配器未提供 `target_message_content`）。
+        """
+        message = kwargs.get('message')
+        segments = message.get('raw_message') if isinstance(message, dict) else None
+        if segments is None:
+            segments = getattr(message, 'raw_message', None)
+        for seg in segments or []:
+            if isinstance(seg, dict):
+                seg_type, data = seg.get('type'), seg.get('data')
+            else:
+                seg_type, data = getattr(seg, 'type', None), getattr(seg, 'data', None)
+            if str(seg_type or '') != 'reply':
+                continue
+            if isinstance(data, dict):
+                return str(data.get('target_message_content') or data.get('content') or '')
+            return str(data) if isinstance(data, str) else ''
+        return None
+
+    @classmethod
+    def _reply_without_own_command(cls, info, kwargs: Dict[str, Any]) -> bool:
+        """回复/引用消息里，指令是否只出现在被引用原文中（是则不应触发）。
+
+        宿主把回复消息的文本拼成「被引用原文 + 自己的文本」，被引用原文里的指令
+        会在回复者身上重复触发，因此只在回复者自己写的那段里匹配指令。
+        无法判断归属（拿不到被引用原文、原文未出现在文本中）时按不触发处理。
+        """
+        quoted = cls._quoted_text(kwargs)
+        if quoted is None:
+            return False  # 不是回复消息
+        pattern = str((getattr(info, 'meta', None) or {}).get('pattern') or '')
+        if not pattern:
+            return True
+        text = str(kwargs.get('text') or '')
+        own = None
+        if quoted:
+            idx = text.find(quoted)
+            if idx >= 0:
+                own = text[idx + len(quoted):]
+        if own is None:
+            return True
+        return re.search(pattern, own) is None
+
     @staticmethod
     def _access_wrap(fn):
-        """包装命令处理器：进入前做黑白名单检查。"""
+        """包装命令处理器：进入前做黑白名单检查，并忽略回复消息里被引用原文的指令。"""
         import functools
 
         info = getattr(fn, '__maibot_component_info__', None)
 
         @functools.wraps(fn)
         async def wrapper(self, *args, **kwargs):
+            if self._reply_without_own_command(info, kwargs):
+                # 引用别人发过的指令（自己没写指令）不应触发：放行给后续流程，不拦截
+                return False, '回复消息不触发指令', False
             deny = self._access_check(kwargs)
             if deny:
                 if getattr(self.config.access, 'notify', True):
@@ -673,6 +746,14 @@ class MaimaidxPlugin(MaiBotPlugin):
             if auto and (self._assets_task is None or self._assets_task.done()):
                 self.ctx.logger.info('maimaidx 将在后台自动下载官方素材包，完成后自动启用源渲染')
                 self._assets_task = asyncio.create_task(self._ensure_assets())
+            else:
+                self.ctx.logger.info(
+                    'maimaidx 未找到官方素材包，当前使用简化渲染。'
+                    '如需源插件同款渲染：手动下载素材包（约 445MB）解压后把 static 目录放到 %s '
+                    '或在 resources.assets_dir 指定路径；也可把 resources.auto_download 设为 true 由插件'
+                    '自动下载（默认关闭，详见 README「官方素材包」一节）',
+                    self.ctx.paths.data_dir / 'assets' / 'static',
+                )
 
     # ---------- 通用辅助 ----------
 

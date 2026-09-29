@@ -423,7 +423,7 @@ def help_image() -> Optional[bytes]:
         ]),
     ]
     rows = sum(len(items) + 1 for _, _, items in sections)
-    H = 96 + rows * line_h + len(sections) * 14 + pad * 2
+    H = 96 + rows * line_h + len(sections) * 14 + pad * 2 + line_h  # 末行留给底部说明
     img = _panel(W, H)
     draw = ImageDraw.Draw(img)
     draw.rounded_rectangle([10, 10, W - 11, 88], radius=18, fill=(255, 108, 152))
@@ -443,4 +443,7 @@ def help_image() -> Optional[bytes]:
                       font=_font(20), fill=(150, 150, 150))
             y += line_h
         y += 8
+    draw.text((pad + 16, y + 10), '※ 回复/引用消息不触发指令（只在你自己输入的文字里匹配）',
+              font=_font(19), fill=(150, 150, 150))
+    y += line_h
     return _png_bytes(img.crop((0, 0, W, y + pad)))

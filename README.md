@@ -1,16 +1,29 @@
 # maimaiDX 查分 MaiBot 插件
 
-由 NoneBot 插件 `nonebot_plugin_maimaidx` 移植的 MaiBot 查分插件，并自己添加了猜歌的功能。
+由 NoneBot 插件 `nonebot_plugin_maimaidx` 移植的 MaiBot 查分插件。
 
-## 数据来源
+## 数据来源与外部请求
 
-- **水鱼查分器** `https://maimai.diving-fish.com/api/maimaidxprober`：曲目数据（定数、曲师、谱师、版本、难度）、谱面统计（拟合定数 fit_diff）、玩家 B50 / 成绩
-- **水鱼账号服务** `https://auth.diving-fish.com`：新版 OAuth 授权（client_id/client_secret，代绑定用户查询成绩）
-- **柚子社别名库** `https://www.yuzuchan.moe/api/maimaidx`：曲目别名
+插件需要联网访问以下第三方服务。下表列出每个出口会发出什么内容，便于部署前评估；除此之外不会上传聊天记录或其他用户数据。
 
-## 水鱼认证（两套机制，二选一或同时）
+| 出口 | 地址 | 发出的内容 | 触发时机 |
+|---|---|---|---|
+| 水鱼查分器 | `https://maimai.diving-fish.com/api/maimaidxprober` | 曲目/谱面数据拉取；查询成绩时的查分器用户名或 QQ 号；开发者 token（配置后随请求头发送） | 初始化、`maimai更新数据`、`b50` / `查成绩` 等 |
+| 水鱼账号服务 | `https://auth.diving-fish.com` | OAuth client_id / client_secret、用户确认码、代查令牌请求 | `绑定水鱼` / `水鱼确认码` 及 OAuth 代查 |
+| 柚子社别名库 | `https://www.yuzuchan.moe/api/maimaidx` | 曲目别名数据拉取；**别名投票会把曲目ID、别名、申请者 QQ 号（ApplyUID）、群号（GroupID）、客户端 UUID（WSUUID）提交给柚子社** | 初始化/更新数据；`添加别名` / `同意别名` |
+| 柚子社资源站 | `https://www.yuzuchan.moe/assets/maimaidx/cover` | 按曲目ID请求曲绘图片 | 曲目详情附带曲绘时（可用 `api.cover_base_url` 关掉或换源） |
+| 柚子社反代 | `https://proxy.yuzuchan.site` | 与水鱼查分器/别名库相同的请求（含对应凭据） | 仅当 `api.use_prober_proxy` / `api.use_alias_proxy` 开启 |
+| 腾讯 QQ 头像 | `https://q1.qlogo.cn/g` | 被查询者的 QQ 号（用于 B50 成绩单上的头像） | `b50 QQ号` 且素材包源渲染可用时 |
+| 素材下载源 | 见下方「官方素材包」 | 不含用户数据，仅下载素材包 | `resources.auto_download` 开启时 |
+| 自定义地址 | `api.artist_alias_url` / `api.charter_alias_url` / `resources.download_url` | 由管理员填写，请求内容取决于该地址运营方 | 对应配置非空时 |
 
-1. **开发者 token**（旧版，配置项 `api.maimaidx_token`）：用于「查成绩 用户名/QQ号 曲目」查他人成绩。
+客户端 UUID（别名投票上报，WSUUID）每次启动用 `uuid4` 随机生成，不含 MAC 地址等设备信息。
+
+## 水鱼认证（两套机制，二选一或同时；凭据均需自行申请）
+
+插件**不内置任何凭据**，以下两项都需要部署者自己向水鱼申请并填入配置，留空则对应功能不可用。
+
+1. **开发者 token**（旧版，配置项 `api.maimaidx_token`）：用于 `查成绩 用户名/QQ号 曲目` 查他人成绩。
 2. **OAuth client_id + client_secret**（新版，配置项 `api.divingfish_client_id` / `api.divingfish_client_secret`，两者都填写后自动启用）：
    - 用户发送「**绑定水鱼**」→ 机器人给出授权链接 → 用户在水鱼账号页确认后拿到一串确认码；
    - 用户发送「**水鱼确认码 XXXX**」完成绑定；
@@ -32,11 +45,9 @@
 ## 安装
 
 1. 把 `maibot_plugin_maimaidx` 整个目录放进 MaiBot 的 `plugins/` 下，重启 MaiBot。
-2. 插件自动完成初始化：
-   - 拉取曲库/别名/牌子数据并缓存到数据目录（`data/plugins/maibot.plugin.maimaidx/`）；
-   - 检测到未安装官方素材包时，**后台自动下载**（约 445MB，来源柚子社官方发布，需 2GB 磁盘空间）并解压启用，下载期间查询功能正常（简化渲染），完成后自动切换为源插件同款渲染；
-3. 无网络环境：手动下载素材包（[官方发布](https://github.com/Yuri-YuzuChaN/nonebot-plugin-maimaidx)），解压后把 `static` 目录放到数据目录 `assets/static`，或在配置 `resources.assets_dir` 指向任意位置；曲库数据也可手动放入 `music_data.json` / `chart_stats.json`。
-4. 若自动下载失败（源失效），可在配置 `resources.download_url` 填入新的素材包直链后重启。
+2. 插件自动完成初始化：拉取曲库/别名/牌子数据并缓存到数据目录（`data/plugins/xiaocutedog.maibot_plugin_maimaidx/`）。未找到官方素材包时使用内置简化渲染，**不会自动下载素材包**（默认关闭，见下方「官方素材包」）。
+3. 想要源插件同款渲染：手动下载素材包（[官方发布](https://github.com/Yuri-YuzuChaN/nonebot-plugin-maimaidx)），解压后把 `static` 目录放到数据目录 `assets/static`，或在配置 `resources.assets_dir` 指向任意位置；曲库数据也可手动放入 `music_data.json` / `chart_stats.json`。
+4. 也可以把 `resources.auto_download` 设为 `true`，由插件在后台下载并解压官方素材包（约 445MB，需 2GB 磁盘空间；下载期间查询功能正常，完成后自动启用源渲染）。
 
 ## 聊天命令
 
@@ -104,6 +115,27 @@
 文字过长时自动缩小字号完整显示（源插件为截断加 "..."）。
 缺字回退：主字体（素材包字体）缺字时自动按 **MiSans**（随插件 `fonts/` 目录分发）→ 系统中日字体 → 彩色 emoji 字体 的顺序逐字回退，日文汉字、音符、emoji 等不再显示为方框（回退匹配依赖 `fonttools`）。
 
+## 官方素材包（自动下载）
+
+`resources.auto_download` 默认 **关闭**：装好插件不会自动拉取 445MB 素材包，需要时由部署者主动开启。开启后插件在后台下载并解压（不阻塞聊天命令），完成后自动切换到源插件同款渲染。
+
+**下载源**（`resources.download_url` 留空时按顺序尝试，仅接受 https 直链）：
+
+- `https://cloud.yuzuchan.moe/f/34s7/Resource%20CN1.55.7z` —— 柚子社官方发布，主源；
+- `https://share.yuzuchan.moe/d/downloads/Resource%20CN1.55.7z?sign=...` —— 官方分享直链，`sign` 会过期，只作备用。
+
+素材包由柚子社（Yuri-YuzuChaN）发布，内容是 nonebot-plugin-maimaidx 的 `static` 资源（曲绘 / 字体 / 模板）。插件只负责下载与解压，不会检查素材内容本身，请自行确认来源可信。
+
+**完整性校验**：下载完成后会校验
+
+- 体积下限与 7z 文件头，拦截错误页和截断文件；
+- SHA-256：可把期望值填在 `resources.download_sha256`，或由源站提供 `<下载地址>.sha256` 旁挂文件（自动读取）。不符即丢弃该源并尝试下一个源。旁挂文件只能发现损坏或源站意外改动，**要抵御恶意源站请用 `resources.download_sha256` 固定哈希**；日志中的实际 SHA-256 可作固定值参考。
+  注意：两个下载源的包并非同一份文件（实测体积 467150820 / 467136848 字节），固定哈希只对应其中一个；多源配置下若主源失效，备用源会因哈希不符被拒绝（日志会写明原因），此时改填该源对应的哈希或清空该配置即可。
+
+**解压安全**：解压前逐个校验包内成员路径，拒绝绝对路径、盘符、`..` 跳转以及解压后落在目标目录之外的条目（防 Zip-Slip），并拒绝缺少 `static/mai/pic` 的包。定位到的 `static` 会搬到数据目录 `assets/static`（同路径旧目录会被删除）。
+
+**风险提示**：`resources.download_url` 可以指向任意 https 地址，插件会下载并解压其内容到数据目录，请只填写你信任的地址。
+
 ## 图片输出
 
 查询结果默认用 Pillow 绘制成图片发送（与原版 NoneBot 插件类似）：
@@ -125,9 +157,9 @@
 
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
-| `api.maimaidx_token` | （已内置） | 水鱼开发者 token（旧版认证，查他人成绩用） |
-| `api.divingfish_client_id` | （已内置） | 水鱼 OAuth client_id，与 secret 同时填写后启用新版授权 |
-| `api.divingfish_client_secret` | （已内置） | 水鱼 OAuth client_secret |
+| `api.maimaidx_token` | 空 | 水鱼开发者 token（旧版认证，查他人成绩用）。**插件不内置，需自行申请**；留空则该功能不可用 |
+| `api.divingfish_client_id` | 空 | 水鱼 OAuth client_id，与 secret 同时填写后启用新版授权。**插件不内置，需自行申请** |
+| `api.divingfish_client_secret` | 空 | 水鱼 OAuth client_secret，属真实机密，请勿提交到版本库 |
 | `api.divingfish_auth_url` | auth.diving-fish.com | 水鱼账号服务地址 |
 | `api.divingfish_scope` | prober.records.read | OAuth 授权范围（空格分隔可多个） |
 | `api.request_timeout` | 30 | 请求超时（秒） |
@@ -139,6 +171,11 @@
 | `display.long_output_forward` | true | 纯文本模式下的长输出用合并转发 |
 | `display.use_image_output` | true | 图片输出总开关（失败自动回退文本） |
 | `display.bot_name` | 苏涂二舟(xiaocutedog) | 图片 Generated by 署名（美术作者 Designed by 署名按素材条款保留） |
+| `display.font_path` | 空 | 自定义中文字体路径（.ttf/.ttc/.otf），留空自动探测系统字体 |
+| `resources.auto_download` | **false** | 未找到素材包时是否自动下载（约 445MB，需 2GB 磁盘空间）。默认关闭，开启前请阅读「官方素材包」一节 |
+| `resources.assets_dir` | 空 | 素材包 `static` 目录路径；留空则用数据目录 `assets/static` |
+| `resources.download_url` | 空 | 自定义素材包下载地址（**仅接受 https** 的 .7z 直链），留空使用内置官方源 |
+| `resources.download_sha256` | 空 | 素材包 SHA-256 校验值（可选），填写后校验不通过即拒绝解压 |
 | `access.access_mode` | off | 访问控制：off 不限制 / black 黑名单 / white 白名单 |
 | `access.blacklist` | 空 | 黑名单条目：`user:QQ`=用户，纯数字或 `group:群号`=群聊，空格/逗号分隔 |
 | `access.whitelist` | 空 | 白名单条目，格式同上；**为空表示暂不限制** |
@@ -153,11 +190,12 @@
 - **white**：**仅名单内**的用户/群可用，其他人收到提示。
 
 条目格式：`user:123456` = 用户；纯数字 `654321` 或 `group:654321` = 群聊；多个条目用空格或逗号分隔。本地控制台操作员始终不受限。拦截对插件全部聊天命令生效（含 b50/猜歌/完成表等）；LLM 工具不受命令级限制。
-| `display.font_path` | 空 | 自定义中文字体路径，留空自动探测 |
 
 ## 注意
 
-- 开发者 token / OAuth client_secret 仅保存在插件配置中，不会通过任何命令参数传入。
+- **凭据不由插件内置**：开发者 token 与 OAuth client_id/client_secret 都需要部署者自行申请后填入配置，只在配置中保存，不会通过任何命令参数传入。
+  - 如果你的配置是从 **1.2.0 之前的版本**（内置了水鱼凭据）沿用或导入的，配置里可能还留着旧的 token / client_secret。这些值曾随插件公开分发，**建议到水鱼重新申请/重置后替换**，并顺手清空配置中的旧值。
+- **回复/引用消息不触发指令**：宿主会把回复消息的文本拼成「被引用原文 + 你自己的文字」，为避免"引用别人的指令导致重复执行"，插件只在**你自己写的那段文字**里匹配指令——引用原文里的指令不会触发；拿不到被引用原文时（适配器未提供）同样保守忽略。直接发送指令不受影响；在回复里自己手写指令也照常生效。
 - 拟合定数（fit_diff）来自水鱼全体玩家数据拟合，仅供参考，与游戏内实际的 Rating 单曲定数可能略有差异。
 - 曲绘默认走柚子社资源站（`www.yuzuchan.moe/assets/maimaidx/cover`，已实测全量可用）；也可把图片（`{曲目ID}.png`）放入数据目录 `covers/` 文件夹优先使用，或改配置指向其他源。
 - **曲师/谱师别名库**：社区暂无公开 API，插件提供两种方式积累：聊天命令 `添加曲师别名 原名 新别名`（原名支持已有别名，可链式追加）（存到数据目录 `artist_alias_local.json` / `charter_alias_local.json`），或在配置中填 `artist_alias_url` / `charter_alias_url` 导入任意社区 JSON 别名表（`maimai更新数据` 会重新拉取）。

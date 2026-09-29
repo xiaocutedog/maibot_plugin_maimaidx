@@ -1346,6 +1346,9 @@ class SourceRenderer:
 
         draw_column(margin, left_secs)
         draw_column(margin + col_w + col_gap, right_secs)
+        fot.draw_fit(W / 2, height - 96, 16,
+                     '※ 回复/引用消息不触发指令（只在你自己输入的文字里匹配）',
+                     W - margin * 2, text_color, 'mm')
         self._draw_footer(im, bot_name, height - 62, 15, text_color, 2, (255, 255, 255, 255))
         return self.to_bytes(im)
 

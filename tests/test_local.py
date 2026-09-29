@@ -5,7 +5,9 @@
 
 import asyncio
 import base64
+import hashlib
 import json
+import os
 import re
 import sys
 import tempfile
@@ -134,7 +136,7 @@ async def main():
     plugin.ctx = FakeCtx(tmp)
     plugin.config = mod.MaimaidxConfig()
     plugin.config.display.send_cover_image = False  # 在线曲绘默认地址无效，测试时关闭
-    plugin.config.resources.auto_download = False  # 测试不触发 445MB 素材下载
+    plugin.config.resources.auto_download = False  # 显式关闭素材下载（插件默认值即关闭）
 
     print('=== 1. 数据初始化（真实 API）===')
     await plugin._init_data()
@@ -219,7 +221,7 @@ async def main():
     await plugin.cmd_b50(stream_id='s1', matched_groups={'target': 'no_such_user_xyz'}, user_id='123')
     print(' ', last_text())
 
-    print('=== 11. 查成绩 错误路径（开发者接口 + token）===')
+    print('=== 11. 查成绩 错误路径（开发者接口，未配置 token）===')
     plugin.ctx.send.texts.clear()
     await plugin.cmd_record(stream_id='s1', matched_groups={'args': 'no_such_user_xyz 199'}, user_id='123')
     print(' ', last_text())
@@ -233,23 +235,41 @@ async def main():
     r3 = await plugin.tool_player_b50(username='no_such_user_xyz')
     print('  tool_player_b50 OK：', r3['content'])
 
-    print('=== 13. OAuth 真实凭据端到端 ===')
-    assert plugin.api.oauth_enabled is True, '默认已配置 client_id/secret，OAuth 应启用'
+    print('=== 13. 凭据与 OAuth（默认不内置凭据，未配置时给出引导）===')
+    assert plugin.config.api.maimaidx_token == '', '插件不应内置开发者 token'
+    assert plugin.config.api.divingfish_client_id == '', '插件不应内置 OAuth client_id'
+    assert plugin.config.api.divingfish_client_secret == '', '插件不应内置 OAuth client_secret'
+    assert plugin.api.oauth_enabled is False, '未配置 OAuth 凭据时不应启用 OAuth'
     plugin.ctx.send.texts.clear()
     await plugin.cmd_bind_divingfish(stream_id='s1', user_id='12345')
-    t = last_text()
-    assert 'auth.diving-fish.com' in t and '确认码' in t, t
-    print('  绑定水鱼 OK，真实授权链接已生成：', [l for l in t.splitlines() if 'auth' in l][0][:60] + '...')
-    # 未绑定用户自查成绩 → 服务端 consent_required → 友好提示
-    plugin.ctx.send.texts.clear()
-    await plugin.cmd_record(stream_id='s1', matched_groups={'args': '199'}, user_id='12345')
-    print('  查成绩（未绑定）OK：', last_text())
-    # 清空 client_id 时的引导（模拟未配置）
-    plugin.api.apply_config(token=plugin.config.api.maimaidx_token.strip(), timeout=30)
-    plugin.ctx.send.texts.clear()
-    await plugin.cmd_bind_divingfish(stream_id='s1', user_id='12345')
-    assert 'OAuth' in last_text()
+    assert 'OAuth' in last_text() and 'client_id' in last_text(), last_text()
     print('  未配置 OAuth 引导 OK：', last_text().splitlines()[0])
+    # 未配置开发者 token 时查他人成绩的提示（原「已内置 token」场景）
+    plugin.ctx.send.texts.clear()
+    await plugin.cmd_record(stream_id='s1', matched_groups={'args': 'no_such_user_xyz 199'}, user_id='123')
+    print('  未配置开发者 token 提示：', last_text().splitlines()[0])
+    # 有真实凭据时（环境变量提供）才跑端到端，避免把机密写进仓库
+    test_cid = os.environ.get('MAIMAIDX_TEST_CLIENT_ID', '').strip()
+    test_secret = os.environ.get('MAIMAIDX_TEST_CLIENT_SECRET', '').strip()
+    if test_cid and test_secret:
+        print('=== 13b. OAuth 真实凭据端到端（MAIMAIDX_TEST_CLIENT_ID/SECRET）===')
+        plugin.api.apply_config(
+            token=plugin.config.api.maimaidx_token.strip(), timeout=30,
+            client_id=test_cid, client_secret=test_secret)
+        assert plugin.api.oauth_enabled is True
+        plugin.ctx.send.texts.clear()
+        await plugin.cmd_bind_divingfish(stream_id='s1', user_id='12345')
+        t = last_text()
+        assert 'auth.diving-fish.com' in t and '确认码' in t, t
+        print('  绑定水鱼 OK，真实授权链接已生成：',
+              [l for l in t.splitlines() if 'auth' in l][0][:60] + '...')
+        # 未绑定用户自查成绩 → 服务端 consent_required → 友好提示
+        plugin.ctx.send.texts.clear()
+        await plugin.cmd_record(stream_id='s1', matched_groups={'args': '199'}, user_id='12345')
+        print('  查成绩（未绑定）OK：', last_text())
+    else:
+        print('  [跳过] 未设置 MAIMAIDX_TEST_CLIENT_ID / MAIMAIDX_TEST_CLIENT_SECRET，'
+              '跳过真实 OAuth 端到端（假凭据错误路径见第 15 节）')
 
     print('=== 14. scope 解析 ===')
     from maimaidx_core import parse_scope
@@ -262,12 +282,12 @@ async def main():
         pass
     print('  scope 解析通过')
 
-    print('=== 15. OAuth 错误路径（假 client_id 打真实授权服务器）===')
+    print('=== 15. OAuth 错误路径（假 client_id/secret 打真实授权服务器）===')
     plugin.api.apply_config(
         token=plugin.config.api.maimaidx_token.strip(),
         timeout=30,
         client_id='test_invalid_client',
-        client_secret=plugin.config.api.divingfish_client_secret.strip(),
+        client_secret='test_invalid_secret',
     )
     assert plugin.api.oauth_enabled is True
     plugin.ctx.send.texts.clear()
@@ -757,12 +777,66 @@ async def main():
     plugin.config.access.blacklist = ''
     print('  包装后元数据完好：', plugin.cmd_song_info.__maibot_component_info__.meta['pattern'][:24])
 
-    print('=== 25. 素材自动下载模块 ===')
+    print('=== 25. 素材下载模块（默认关闭 / https / 校验 / zip-slip）===')
     from PIL import Image as _Img
-    from maimaidx_core.asset_fetch import extract_archive, find_static_dir, enough_space
+    from maimaidx_core.asset_fetch import (
+        AssetFetchError,
+        check_member_paths,
+        check_url,
+        download_archive,
+        enough_space,
+        extract_archive,
+        find_static_dir,
+        sha256_file,
+    )
+    assert plugin.config.resources.auto_download is False, '素材自动下载应默认关闭'
+    assert plugin.config.resources.download_url == '', '素材下载地址应默认为空'
+    assert plugin._assets_task is None, '默认配置下不应触发素材自动下载任务'
+    print('  默认关闭 OK（auto_download=False，未创建下载任务）')
     assert enough_space(Path(tempfile.gettempdir())), '磁盘空间检查应通过'
-    # 构造一个迷你素材包 7z 验证解压与定位
+    # 只接受 https
+    assert check_url('https://example.com/a.7z') == 'https://example.com/a.7z'
+    for bad_url in ('http://example.com/a.7z', 'ftp://example.com/a.7z', '', 'example.com/a.7z'):
+        try:
+            check_url(bad_url)
+            raise AssertionError(f'非 https 地址应被拒绝: {bad_url}')
+        except AssetFetchError:
+            pass
+    print('  https 限制 OK')
+    # http 源直接拒绝，不会发起下载
+    plugin.config.resources.download_url = 'http://example.com/a.7z'
+    await plugin._ensure_assets()
+    assert not (tmp / 'maimaidx_resources.7z').exists(), 'http 源不应下载任何文件'
+    plugin.config.resources.download_url = ''
+    print('  resources.download_url=http:// 被拒绝且未下载 OK')
+    # 包内路径校验（zip-slip）
+    good = ['SomePack/static/mai/pic/1.png', 'SomePack/static/font/f.ttf', './a/b.png']
+    check_member_paths(good, tmp / 'member_check')
+    for evil in ['../evil.txt', '/abs/evil.txt', 'C:/evil.txt', 'a/../../evil.txt',
+                 'SomePack/../../evil.txt', '..\\evil.txt']:
+        try:
+            check_member_paths([evil], tmp / 'member_check')
+            raise AssertionError(f'应拒绝非法包内路径: {evil}')
+        except AssetFetchError:
+            pass
+    print('  check_member_paths 拒绝越界路径 OK')
+    # 真造一个含 ../ 成员的恶意包，确认解压被拦截（且没有写到 workdir 之外）
     import py7zr
+    payload_dir = tmp / 'payload'
+    payload_dir.mkdir(exist_ok=True)
+    (payload_dir / 'evil_payload.txt').write_text('pwned')
+    evil_7z = tmp / 'evil.7z'
+    with py7zr.SevenZipFile(str(evil_7z), 'w') as z:
+        z.write(str(payload_dir / 'evil_payload.txt'), arcname='../evil_payload.txt')
+    evil_work = tmp / 'evil_extract'
+    try:
+        extract_archive(evil_7z, evil_work)
+        raise AssertionError('含 ../ 成员的包应被拒绝')
+    except AssetFetchError:
+        pass
+    assert not (tmp / 'evil_payload.txt').exists(), 'zip-slip：不应写到解压目录之外'
+    print('  恶意 7z（../ 成员）解压被拦截 OK')
+    # 构造一个迷你素材包 7z 验证解压与定位
     mini_root = tmp / 'mini_pack'
     (mini_root / 'SomePack' / 'static' / 'mai' / 'pic').mkdir(parents=True, exist_ok=True)
     (mini_root / 'SomePack' / 'static' / 'mai' / 'cover').mkdir(parents=True, exist_ok=True)
@@ -778,15 +852,73 @@ async def main():
     print('  extract_archive + find_static_dir OK:', static.name)
     # 验证字体目录布局被 SourceRenderer 认可的路径结构存在
     assert (static / 'font').is_dir() and (static / 'mai' / 'cover').is_dir()
-    # 非法压缩包
+    # 完整性校验：哈希计算正确；全部源为 http 时直接失败且不留文件
+    assert sha256_file(payload_dir / 'evil_payload.txt') == hashlib.sha256(b'pwned').hexdigest(), \
+        'sha256_file 结果不符'
+    try:
+        await download_archive(['http://example.com/a.7z'], tmp / 'never.7z')
+        raise AssertionError('全部源非 https 时应报错')
+    except AssetFetchError:
+        pass
+    assert not (tmp / 'never.7z').exists() and not (tmp / 'never.part').exists()
+    print('  sha256_file + 非 https 源直接失败 OK')
+    # 非法压缩包（非 7z：文件头校验失败）
     bad = tmp / 'bad.7z'
     bad.write_bytes(b'not a 7z file')
     try:
         extract_archive(bad, tmp / 'bad_extract')
         raise AssertionError('坏压缩包应报错')
-    except Exception:
+    except AssetFetchError:
         pass
     print('  坏压缩包报错 OK')
+
+    print('=== 26. 回复/引用消息不触发指令 ===')
+    cited = {'type': 'reply', 'data': {'target_message_id': '1', 'target_message_content': 'id 199'}}
+
+    async def song_info(text, segments):
+        """模拟宿主：回复消息的 text = 被引用原文 + 自己的文本。"""
+        plugin.ctx.send.images.clear(); plugin.ctx.send.texts.clear()
+        return await plugin.cmd_song_info(
+            stream_id='s1', matched_groups={'sid': '199'}, user_id='456',
+            text=text, message={'raw_message': segments})
+
+    # 1. 引用别人发过的指令、自己没写指令 → 不触发（原 bug 场景）
+    res = await song_info('id 199', [cited])
+    assert not plugin.ctx.send.images and not plugin.ctx.send.texts, '被引用原文里的指令不应触发'
+    assert res[2] is False, f'应放行给后续流程（intercept=False），实际 {res}'
+    print('  引用原文里的指令不触发 OK：', res)
+
+    # 2. 引用别人发过的指令，自己在回复里也写指令 → 照常触发
+    await song_info('id 199\nid 11086', [cited, {'type': 'text', 'data': 'id 11086'}])
+    assert plugin.ctx.send.images or plugin.ctx.send.texts, '自己写的指令应触发'
+    print('  引用原文含指令但自己也写了指令 → 照常触发 OK')
+
+    # 3. 引用无关消息，自己写指令 → 照常触发
+    other = {'type': 'reply', 'data': {'target_message_content': '这歌真好听'}}
+    await song_info('这歌真好听\nid 199', [other, {'type': 'text', 'data': 'id 199'}])
+    assert plugin.ctx.send.images or plugin.ctx.send.texts, '回复无关消息时自己写的指令应触发'
+    print('  回复无关消息时指令照常触发 OK')
+
+    # 4. 纯文本消息（非回复）不受影响
+    plugin.ctx.send.images.clear(); plugin.ctx.send.texts.clear()
+    await plugin.cmd_song_info(stream_id='s1', matched_groups={'sid': '199'}, user_id='456', text='id 199')
+    assert plugin.ctx.send.images or plugin.ctx.send.texts, '普通消息应照常触发'
+    print('  普通消息回归 OK')
+
+    # 5. 回复段没带原文（适配器未提供 target_message_content）→ 保守不触发
+    bare = {'type': 'reply', 'data': {'target_message_id': '1'}}
+    await song_info('id 199', [bare])
+    assert not plugin.ctx.send.images and not plugin.ctx.send.texts, '取不到被引用原文时应保守忽略'
+    print('  取不到被引用原文时保守忽略 OK')
+
+    # 6. 其它指令同样生效（b50 引用了别处的 b50）
+    plugin.ctx.send.images.clear(); plugin.ctx.send.texts.clear()
+    await plugin.cmd_b50(stream_id='s1', user_id='123', matched_groups={'target': 'no_such_user_xyz'},
+                         text='b50 no_such_user_xyz',
+                         message={'raw_message': [{'type': 'reply', 'data': {
+                             'target_message_content': 'b50 no_such_user_xyz'}}]})
+    assert not plugin.ctx.send.images and not plugin.ctx.send.texts, 'b50 被引用时也不应触发'
+    print('  b50 引用场景不触发 OK')
 
     print()
     print('ALL TESTS PASSED')
